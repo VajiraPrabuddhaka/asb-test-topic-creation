@@ -9,6 +9,7 @@ import (
 	"log"
 	"math/rand"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -109,7 +110,7 @@ func DeleteTopic(adminClient *admin.Client, topicName string) {
 
 func main() {
 	// Replace this with your Azure Service Bus connection string
-	connectionString := "<connection-string>"
+	connectionString := ""
 
 	// Create a new Service Bus administration client using the connection string
 	adminClient, err := admin.NewClientFromConnectionString(connectionString, nil)
@@ -117,20 +118,35 @@ func main() {
 		log.Fatalf("Failed to create a Service Bus admin client: %v", err)
 	}
 
+	const maxConcurrency = 500 // Set the max number of concurrent goroutines
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxConcurrency)
+
 	// Loop to create 10,000 topics
 	for i := 1; i <= 10000; i++ {
-		topicName := "vj-test-" + strconv.Itoa(i)
-		sapName := "vj-test-sap-" + strconv.Itoa(i)
-		topic, err := CheckAndCreateTopic(adminClient, topicName)
-		if err != nil {
-			log.Printf("Failed to create topic '%s': %v", topicName, err)
-		}
+		wg.Add(1)
+		sem <- struct{}{}
 
-		if err := CreateSAPForTopic(adminClient, topic, topicName, sapName); err != nil {
-			log.Printf("Failed to create SAP for topic '%s': %v", topicName, err)
-		}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }() // Release the spot in the semaphore
+
+			topicName := "vj-test-" + strconv.Itoa(i)
+			sapName := "vj-test-sap-" + strconv.Itoa(i)
+
+			topic, err := CheckAndCreateTopic(adminClient, topicName)
+			if err != nil {
+				log.Printf("Failed to create topic '%s': %v", topicName, err)
+				return
+			}
+
+			if err := CreateSAPForTopic(adminClient, topic, topicName, sapName); err != nil {
+				log.Printf("Failed to create SAP for topic '%s': %v", topicName, err)
+			}
+		}(i)
 	}
 
+	wg.Wait()
 	//createSharedAccessPolicy(connectionString, "test-topic-100", "test-policy", []string{"Listen"})
 	//CreateSAPTopic(adminClient, "test-topic-100")
 	//CheckAndCreateTopic(adminClient, "test-topic-100")
